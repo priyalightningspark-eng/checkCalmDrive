@@ -341,9 +341,9 @@
       <div class="sensor-bar"><div class="sensor-bar-fill" id="motionBar"></div></div>
     </div>
     <div class="sensor-card" id="voiceCard">
-      <div class="sensor-label">🎙 Voice level</div>
-      <div class="sensor-val" id="voiceVal">—</div>
-      <div class="sensor-unit">amplitude</div>
+      <div class="sensor-label">🎙 Listening for</div>
+      <div class="sensor-val" id="voiceVal" style="font-size:14px;padding-top:4px;">—</div>
+      <div class="sensor-unit">trigger words</div>
       <div class="sensor-bar"><div class="sensor-bar-fill" id="voiceBar"></div></div>
     </div>
   </div>
@@ -351,7 +351,7 @@
   <!-- BIG MIC METER -->
   <div id="micMeterWrap" style="display:none; background:#122b1c; border:1px solid rgba(109,184,138,0.2); border-radius:16px; padding:16px;">
     <div style="display:flex; justify-content:space-between; font-size:11px; color:#6a9478; text-transform:uppercase; letter-spacing:.06em; margin-bottom:10px;">
-      <span>🎙 Mic level — yell to trigger</span>
+      <span>🎙 Mic active — says trigger word to fire</span>
       <span id="micLevelNum" style="color:#c4dece; font-weight:600;">0.00</span>
     </div>
     <div style="height:22px; background:rgba(255,255,255,0.06); border-radius:11px; overflow:hidden; position:relative;">
@@ -437,7 +437,7 @@ if (GA_ID) {
 
 // ── STATE ──
 let driving = false;
-let audioCtx = null, analyser = null, micStream = null;
+let audioCtx = null, analyser = null, micStream = null; // audioCtx/analyser now managed inside startMic as audioCtxVol/analyserVol
 let motionCount = 0, voiceCount = 0, cueCount = 0;
 let driveStartTime = null;
 let cueCooldown = false;
@@ -446,8 +446,8 @@ let wakeLock = null;
 let lastAcc = null, motionListener = null;
 
 const MOTION_THRESHOLD = 12;
-const VOICE_THRESHOLD  = 0.08;  // very sensitive — normal talking will approach this, yelling will cross it
-const CUE_COOLDOWN_MS  = 18000;
+const VOICE_THRESHOLD  = 0.02;  // catch any clear speech or loud sound
+const CUE_COOLDOWN_MS  = 8000;  // 8s cooldown for testing
 
 // ── PWA INSTALL ──
 let deferredPrompt = null;
@@ -523,59 +523,120 @@ function endDrive() {
   gaEvent('drive_end', { motion_triggers: motionCount, voice_spikes: voiceCount, cues_played: cueCount });
 }
 
-// ── MICROPHONE ──
+// ── TRIGGER WORDS ──
+const TRIGGER_WORDS = [
+  'idiot','stupid','moron','jerk','ass','asshole','dumb','fool',
+  'hate','kill','crazy','maniac','loser','freak','cut me off',
+  'what the','oh my god','unbelievable','seriously','come on',
+  'move','go','slow','stop it','are you kidding','ridiculous',
+  'horrible','terrible','awful','worst','pathetic'
+];
+
+// ── MICROPHONE + SPEECH RECOGNITION ──
+let recognition = null;
+let audioCtxVol = null, analyserVol = null; // separate ctx just for volume meter
+
 async function startMic() {
+  // 1. Start volume meter (visual feedback only)
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
     micStream = stream;
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    // Resume context — required in Chrome/Safari after user gesture
-    if (audioCtx.state === 'suspended') await audioCtx.resume();
-    const source = audioCtx.createMediaStreamSource(stream);
-    analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 256;
-    analyser.smoothingTimeConstant = 0.5;
-    source.connect(analyser);
+    audioCtxVol = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtxVol.state === 'suspended') await audioCtxVol.resume();
+    const source = audioCtxVol.createMediaStreamSource(stream);
+    analyserVol = audioCtxVol.createAnalyser();
+    analyserVol.fftSize = 256;
+    analyserVol.smoothingTimeConstant = 0.6;
+    source.connect(analyserVol);
     loopAudio();
-    return true;
   } catch(e) {
     console.error('Mic error:', e);
     return false;
   }
+
+  // 2. Start speech recognition for keyword detection
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    console.warn('Speech recognition not supported — using volume only');
+    return true;
+  }
+
+  recognition = new SpeechRecognition();
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.lang = 'en-US';
+  recognition.maxAlternatives = 3;
+
+  recognition.onresult = (event) => {
+    if (!driving) return;
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      for (let a = 0; a < event.results[i].length; a++) {
+        const transcript = event.results[i][a].transcript.toLowerCase().trim();
+        // Show what was heard in the voice card
+        document.getElementById('voiceVal').textContent = transcript.slice(-12);
+        // Check against trigger words
+        const hit = TRIGGER_WORDS.find(w => transcript.includes(w));
+        if (hit) {
+          console.log('Trigger word detected:', hit, 'in:', transcript);
+          document.getElementById('voiceCard').classList.add('triggered');
+          setTimeout(() => document.getElementById('voiceCard').classList.remove('triggered'), 1500);
+          voiceCount++;
+          updateStats();
+          triggerCue('word:' + hit);
+          gaEvent('trigger_word', { word: hit });
+        }
+      }
+    }
+  };
+
+  recognition.onerror = (e) => {
+    console.warn('Speech recognition error:', e.error);
+    // Auto-restart on common recoverable errors
+    if (driving && (e.error === 'no-speech' || e.error === 'aborted')) {
+      setTimeout(() => { if (driving && recognition) recognition.start(); }, 500);
+    }
+  };
+
+  recognition.onend = () => {
+    // Keep restarting while drive is active
+    if (driving) {
+      setTimeout(() => { if (driving && recognition) recognition.start(); }, 300);
+    }
+  };
+
+  try {
+    recognition.start();
+    return true;
+  } catch(e) {
+    console.error('Recognition start error:', e);
+    return true; // volume meter still works
+  }
 }
 
 function stopMic() {
+  if (recognition) { try { recognition.stop(); } catch(e){} recognition = null; }
   if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
-  if (audioCtx) { audioCtx.close(); audioCtx = null; }
-  analyser = null;
+  if (audioCtxVol) { audioCtxVol.close(); audioCtxVol = null; }
+  analyserVol = null;
+  if (animFrame) { cancelAnimationFrame(animFrame); animFrame = null; }
 }
 
 function loopAudio() {
-  if (!driving || !analyser) return;
-  const data = new Uint8Array(analyser.frequencyBinCount);
-  analyser.getByteTimeDomainData(data);
+  if (!driving || !analyserVol) return;
+  const data = new Uint8Array(analyserVol.frequencyBinCount);
+  analyserVol.getByteTimeDomainData(data);
   let sum = 0;
   for (let i = 0; i < data.length; i++) { const v = (data[i]-128)/128; sum += v*v; }
   const rms = Math.sqrt(sum / data.length);
-  const pct = Math.min(rms / 0.35, 1);  // scale bar to realistic range
+  const pct = Math.min(rms / 0.06, 1) * 100;
 
-  // Show raw value so user can see mic is working
-  document.getElementById('voiceVal').textContent = (rms * 100).toFixed(1);
-  document.getElementById('voiceBar').style.width = (pct * 100) + '%';
+  document.getElementById('voiceBar').style.width = pct + '%';
+  document.getElementById('micMeter').style.width = pct + '%';
+  document.getElementById('micLevelNum').textContent = (rms * 1000).toFixed(0);
+  document.getElementById('micMeter').style.background = pct > 60
+    ? 'linear-gradient(90deg,#c0472a,#f07a5a)'
+    : 'linear-gradient(90deg,#3a8a57,#6db88a)';
 
-  // Big meter: threshold is at 0.08/0.35 = 23% of bar width
-  const bigPct = Math.min(rms / 0.35, 1) * 100;
-  document.getElementById('micMeter').style.width = bigPct + '%';
-  document.getElementById('micLevelNum').textContent = (rms * 100).toFixed(1);
-
-  if (rms > VOICE_THRESHOLD) {
-    document.getElementById('voiceCard').classList.add('triggered');
-    setTimeout(() => document.getElementById('voiceCard').classList.remove('triggered'), 1200);
-    voiceCount++;
-    updateStats();
-    triggerCue('voice');
-    gaEvent('voice_spike', { amplitude: rms.toFixed(3) });
-  }
   animFrame = requestAnimationFrame(loopAudio);
 }
 
