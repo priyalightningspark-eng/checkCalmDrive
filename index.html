@@ -370,6 +370,17 @@
     </button>
   </div>
 
+  <!-- DEBUG TRANSCRIPT PANEL -->
+  <div id="debugPanel" style="display:none; background:#0a1f12; border:1px solid rgba(109,184,138,0.3); border-radius:14px; padding:14px 16px;">
+    <div style="font-size:11px; color:#6a9478; text-transform:uppercase; letter-spacing:.06em; margin-bottom:8px; display:flex; justify-content:space-between;">
+      <span>🎙 I heard...</span>
+      <span id="recogStatus" style="color:#f0c060;">starting...</span>
+    </div>
+    <div id="transcriptLog" style="font-size:14px; color:#c4dece; min-height:36px; line-height:1.6; font-style:italic;">
+      (waiting for speech)
+    </div>
+  </div>
+
   <div class="section-label">This drive</div>
   <div class="stats">
     <div class="stat-card">
@@ -497,6 +508,7 @@ async function startDrive() {
   if (micOk) hidePerm();
   document.getElementById('micMeterWrap').style.display = 'block';
   document.getElementById('testRow').style.display = 'block';
+  document.getElementById('debugPanel').style.display = 'block';
   await requestWakeLock();
   gaEvent('drive_start');
 }
@@ -518,6 +530,7 @@ function endDrive() {
   document.getElementById('voiceCard').classList.remove('triggered');
   document.getElementById('micMeterWrap').style.display = 'none';
   document.getElementById('testRow').style.display = 'none';
+  document.getElementById('debugPanel').style.display = 'none';
   document.getElementById('micMeter').style.width = '0%';
   showSummary();
   gaEvent('drive_end', { motion_triggers: motionCount, voice_spikes: voiceCount, cues_played: cueCount });
@@ -569,15 +582,26 @@ async function startMic() {
 
   recognition.onresult = (event) => {
     if (!driving) return;
+    document.getElementById('recogStatus').textContent = 'active ✓';
+    document.getElementById('recogStatus').style.color = '#6db88a';
     for (let i = event.resultIndex; i < event.results.length; i++) {
+      const isFinal = event.results[i].isFinal;
       for (let a = 0; a < event.results[i].length; a++) {
         const transcript = event.results[i][a].transcript.toLowerCase().trim();
-        // Show what was heard in the voice card
-        document.getElementById('voiceVal').textContent = transcript.slice(-12);
+        if (!transcript) continue;
+
+        // Show in debug panel
+        document.getElementById('transcriptLog').textContent = '"' + transcript + '"';
+        document.getElementById('transcriptLog').style.color = isFinal ? '#c4dece' : '#6a9478';
+
+        // Show last word in voice card
+        document.getElementById('voiceVal').textContent = transcript.slice(-18);
+
         // Check against trigger words
         const hit = TRIGGER_WORDS.find(w => transcript.includes(w));
         if (hit) {
-          console.log('Trigger word detected:', hit, 'in:', transcript);
+          document.getElementById('transcriptLog').style.color = '#f07a5a';
+          document.getElementById('transcriptLog').textContent = '🔴 "' + transcript + '" → ' + hit;
           document.getElementById('voiceCard').classList.add('triggered');
           setTimeout(() => document.getElementById('voiceCard').classList.remove('triggered'), 1500);
           voiceCount++;
@@ -591,16 +615,24 @@ async function startMic() {
 
   recognition.onerror = (e) => {
     console.warn('Speech recognition error:', e.error);
+    document.getElementById('recogStatus').textContent = '⚠ ' + e.error;
+    document.getElementById('recogStatus').style.color = '#f0c060';
     // Auto-restart on common recoverable errors
-    if (driving && (e.error === 'no-speech' || e.error === 'aborted')) {
-      setTimeout(() => { if (driving && recognition) recognition.start(); }, 500);
+    if (driving && (e.error === 'no-speech' || e.error === 'aborted' || e.error === 'network')) {
+      setTimeout(() => { if (driving && recognition) { try { recognition.start(); } catch(ex){} } }, 800);
     }
   };
 
   recognition.onend = () => {
+    document.getElementById('recogStatus').textContent = 'restarting...';
     // Keep restarting while drive is active
     if (driving) {
-      setTimeout(() => { if (driving && recognition) recognition.start(); }, 300);
+      setTimeout(() => {
+        if (driving && recognition) {
+          try { recognition.start(); document.getElementById('recogStatus').textContent = 'active ✓'; }
+          catch(ex) { document.getElementById('recogStatus').textContent = '⚠ restart failed'; }
+        }
+      }, 300);
     }
   };
 
