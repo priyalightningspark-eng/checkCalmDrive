@@ -424,7 +424,7 @@ let wakeLock = null;
 let lastAcc = null, motionListener = null;
 
 const MOTION_THRESHOLD = 12;
-const VOICE_THRESHOLD  = 0.60;
+const VOICE_THRESHOLD  = 0.18;  // lowered — triggers on clear yelling
 const CUE_COOLDOWN_MS  = 18000;
 
 // ── PWA INSTALL ──
@@ -457,8 +457,11 @@ async function startDrive() {
   const micOk = await startMic();
   const motOk = await startMotion();
   if (!micOk && !motOk) {
-    showPerm('Could not access microphone or motion sensors. Please allow permissions and try again.');
+    showPerm('❌ Could not access microphone or motion sensors. On Chrome: click the 🔒 lock icon in the address bar and allow Microphone. Then refresh and try again.');
     return;
+  }
+  if (!micOk) {
+    showPerm('⚠️ Microphone blocked — voice detection disabled. Allow mic access in your browser settings for full detection.');
   }
   driving = true;
   driveStartTime = Date.now();
@@ -468,8 +471,8 @@ async function startDrive() {
   document.getElementById('btnIcon').textContent = '🛑';
   document.getElementById('btnLabel').textContent = 'End Drive';
   document.getElementById('btnSub').textContent = 'tap to finish';
-  setStatus('driving', 'Listening…');
-  hidePerm();
+  setStatus('driving', micOk ? 'Listening…' : 'Motion only…');
+  if (micOk) hidePerm();
   await requestWakeLock();
   gaEvent('drive_start');
 }
@@ -499,14 +502,19 @@ async function startMic() {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
     micStream = stream;
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    // Resume context — required in Chrome/Safari after user gesture
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
     const source = audioCtx.createMediaStreamSource(stream);
     analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 512;
-    analyser.smoothingTimeConstant = 0.7;
+    analyser.fftSize = 256;
+    analyser.smoothingTimeConstant = 0.5;
     source.connect(analyser);
     loopAudio();
     return true;
-  } catch(e) { return false; }
+  } catch(e) {
+    console.error('Mic error:', e);
+    return false;
+  }
 }
 
 function stopMic() {
@@ -522,9 +530,12 @@ function loopAudio() {
   let sum = 0;
   for (let i = 0; i < data.length; i++) { const v = (data[i]-128)/128; sum += v*v; }
   const rms = Math.sqrt(sum / data.length);
-  const pct = Math.min(rms / 0.85, 1);
-  document.getElementById('voiceVal').textContent = Math.round(rms * 100);
+  const pct = Math.min(rms / 0.35, 1);  // scale bar to realistic range
+
+  // Show raw value so user can see mic is working
+  document.getElementById('voiceVal').textContent = (rms * 100).toFixed(1);
   document.getElementById('voiceBar').style.width = (pct * 100) + '%';
+
   if (rms > VOICE_THRESHOLD) {
     document.getElementById('voiceCard').classList.add('triggered');
     setTimeout(() => document.getElementById('voiceCard').classList.remove('triggered'), 1200);
