@@ -348,6 +348,28 @@
     </div>
   </div>
 
+  <!-- BIG MIC METER -->
+  <div id="micMeterWrap" style="display:none; background:#122b1c; border:1px solid rgba(109,184,138,0.2); border-radius:16px; padding:16px;">
+    <div style="display:flex; justify-content:space-between; font-size:11px; color:#6a9478; text-transform:uppercase; letter-spacing:.06em; margin-bottom:10px;">
+      <span>🎙 Mic level — yell to trigger</span>
+      <span id="micLevelNum" style="color:#c4dece; font-weight:600;">0.00</span>
+    </div>
+    <div style="height:22px; background:rgba(255,255,255,0.06); border-radius:11px; overflow:hidden; position:relative;">
+      <div id="micMeter" style="height:100%; width:0%; border-radius:11px; background:linear-gradient(90deg,#3a8a57 0%,#6db88a 50%,#f0c060 75%,#c0472a 100%); transition:width 0.08s ease;"></div>
+      <div id="threshMark" style="position:absolute; top:0; bottom:0; width:3px; background:white; opacity:0.8; border-radius:2px; left:23%;"></div>
+    </div>
+    <div style="display:flex; justify-content:space-between; font-size:10px; color:#6a9478; margin-top:6px;">
+      <span>Quiet</span><span style="color:#f0c060;">&#9650; trigger point</span><span>Loud</span>
+    </div>
+  </div>
+
+  <!-- TEST BUTTON -->
+  <div id="testRow" style="display:none;">
+    <button onclick="triggerCue('test')" style="width:100%; padding:13px; background:#1e4a2e; border:1px solid rgba(109,184,138,0.35); border-radius:14px; color:#c4dece; font-family:inherit; font-size:13px; font-weight:600; cursor:pointer;">
+      🔔 Test Calming Cue — tap to confirm audio works
+    </button>
+  </div>
+
   <div class="section-label">This drive</div>
   <div class="stats">
     <div class="stat-card">
@@ -424,7 +446,7 @@ let wakeLock = null;
 let lastAcc = null, motionListener = null;
 
 const MOTION_THRESHOLD = 12;
-const VOICE_THRESHOLD  = 0.18;  // lowered — triggers on clear yelling
+const VOICE_THRESHOLD  = 0.08;  // very sensitive — normal talking will approach this, yelling will cross it
 const CUE_COOLDOWN_MS  = 18000;
 
 // ── PWA INSTALL ──
@@ -473,6 +495,8 @@ async function startDrive() {
   document.getElementById('btnSub').textContent = 'tap to finish';
   setStatus('driving', micOk ? 'Listening…' : 'Motion only…');
   if (micOk) hidePerm();
+  document.getElementById('micMeterWrap').style.display = 'block';
+  document.getElementById('testRow').style.display = 'block';
   await requestWakeLock();
   gaEvent('drive_start');
 }
@@ -492,6 +516,9 @@ function endDrive() {
   document.getElementById('voiceBar').style.width = '0%';
   document.getElementById('motionCard').classList.remove('triggered');
   document.getElementById('voiceCard').classList.remove('triggered');
+  document.getElementById('micMeterWrap').style.display = 'none';
+  document.getElementById('testRow').style.display = 'none';
+  document.getElementById('micMeter').style.width = '0%';
   showSummary();
   gaEvent('drive_end', { motion_triggers: motionCount, voice_spikes: voiceCount, cues_played: cueCount });
 }
@@ -535,6 +562,11 @@ function loopAudio() {
   // Show raw value so user can see mic is working
   document.getElementById('voiceVal').textContent = (rms * 100).toFixed(1);
   document.getElementById('voiceBar').style.width = (pct * 100) + '%';
+
+  // Big meter: threshold is at 0.08/0.35 = 23% of bar width
+  const bigPct = Math.min(rms / 0.35, 1) * 100;
+  document.getElementById('micMeter').style.width = bigPct + '%';
+  document.getElementById('micLevelNum').textContent = (rms * 100).toFixed(1);
 
   if (rms > VOICE_THRESHOLD) {
     document.getElementById('voiceCard').classList.add('triggered');
